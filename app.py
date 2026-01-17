@@ -48,9 +48,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
 # -----------------------------
-# Load exported model bundles (STRICT6) - LAZY
-#   ✅ Default load ONLY h=1 at startup
-#   ✅ Load h=6/h=12 on demand when predicting
+# Load exported model bundles (STRICT6)
 # -----------------------------
 def _load_bundle(rel_path: str):
     p = os.path.join(BASE_DIR, rel_path)
@@ -60,11 +58,12 @@ def _load_bundle(rel_path: str):
 
 
 @st.cache_resource
-def load_bundle(h: int) -> dict:
-    if h not in (1, 6, 12):
-        raise ValueError(f"Unsupported horizon: {h}. Expected one of (1,6,12).")
-    rel = f"exports/models_strict6_compressed/ensemble_bundle_h{h}.joblib.xz"
-    return _load_bundle(rel)
+def load_all_bundles():
+    return {
+        1: _load_bundle("exports/models_strict6/ensemble_bundle_h1.joblib"),
+        6: _load_bundle("exports/models_strict6/ensemble_bundle_h6.joblib"),
+        12: _load_bundle("exports/models_strict6/ensemble_bundle_h12.joblib"),
+    }
 
 
 # -----------------------------
@@ -135,10 +134,8 @@ EMBEDDED_DEFAULTS_RAW = {
 STRICT_POLLUTANTS = ["CO", "NO2", "O3", "PM10", "PM2.5", "SO2"]
 STRICT_POLLUTANT_LAGS = [1, 3, 6, 12, 24]   # per your strict plan
 
-
 def _deg2rad(d: float) -> float:
     return d * math.pi / 180.0
-
 
 def build_defaults_for_features(feature_cols: list[str], base: dict) -> dict:
     """
@@ -258,17 +255,18 @@ def predict_with_bundle(bundle: dict, X: pd.DataFrame) -> np.ndarray:
     return meta.predict(meta_X)
 
 
+
 # -----------------------------
-# Load ONLY h=1 model (need feature_cols early)
+# Load models (need feature_cols early)
 # -----------------------------
 try:
-    bundle_h1 = load_bundle(1)  # ✅ default load ONLY h=1
+    bundles = load_all_bundles()
 except Exception as e:
-    st.error("❌ Failed to load STRICT6 model (h=1). Please check exports/models_strict6_compressed/ensemble_bundle_h1.joblib.xz")
+    st.error("❌ Failed to load STRICT6 models. Please check exports/models_strict6/ensemble_bundle_h{1,6,12}.joblib")
     st.exception(e)
     st.stop()
 
-feature_cols = bundle_h1["feature_cols"]
+feature_cols = bundles[1]["feature_cols"]
 
 
 # -----------------------------
@@ -340,7 +338,6 @@ def _apply_time_from_manual_dt():
     if "is_weekend" in feature_cols:
         st.session_state["feat__is_weekend"] = int(md.dayofweek >= 5)
 
-
 _apply_time_from_manual_dt()
 
 
@@ -349,9 +346,9 @@ _apply_time_from_manual_dt()
 # -----------------------------
 with st.sidebar:
     st.header("⚙️ Settings")
-    st.success("Models loaded ✅")  # (h=6/h=12 will be loaded on-demand)
+    st.success("Models loaded ✅")
 
-    horizons = st.multiselect("⏱️ Forecast horizons", [1, 6, 12], default=[1])
+    horizons = st.multiselect("⏱️ Forecast horizons", [1, 6, 12], default=[1, 6, 12])
 
     st.divider()
     st.subheader("🗓️ datetime_input (select date & time)")
@@ -396,7 +393,6 @@ with st.sidebar:
 # Feature grouping (STRICT6-aware)
 # -----------------------------
 DOW_LABELS = {0: "Mon", 1: "Tue", 2: "Wed", 3: "Thu", 4: "Fri", 5: "Sat", 6: "Sun"}
-
 
 def group_features(cols: list[str]) -> dict[str, list[str]]:
     groups = {
@@ -498,8 +494,7 @@ if st.session_state["view"] == "Input":
 
         outputs = []
         for h in horizons:
-            # ✅ On-demand load for h=6/h=12; h=1 is already cached
-            y = float(predict_with_bundle(load_bundle(h), X)[0])
+            y = float(predict_with_bundle(bundles[h], X)[0])
             outputs.append({"horizon_hours": h, "predicted_AQI": y})
 
         pred_df = pd.DataFrame(outputs).sort_values("horizon_hours").reset_index(drop=True)
